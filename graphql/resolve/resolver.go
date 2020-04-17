@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strings"
@@ -1071,6 +1072,20 @@ func completeValue(
 	field schema.Field,
 	val interface{}) ([]byte, x.GqlErrorList) {
 
+	scalarResp := func(field schema.Field) ([]byte, x.GqlErrorList) {
+		if field.Type().Nullable() {
+			return []byte("null"), nil
+		}
+
+		gqlErr := x.GqlErrorf(
+			"Non-nullable field '%s' (type %s) was not present in result from Dgraph.  "+
+				"GraphQL error propagation triggered.", field.Name(), field.Type()).
+			WithLocations(field.Location())
+		gqlErr.Path = copyPath(path)
+
+		return nil, x.GqlErrorList{gqlErr}
+	}
+
 	switch val := val.(type) {
 	case map[string]interface{}:
 		return completeObject(path, field.SelectionSet(), val)
@@ -1093,19 +1108,26 @@ func completeValue(
 				return []byte("[]"), nil
 			}
 
-			if field.Type().Nullable() {
-				return []byte("null"), nil
-			}
-
-			gqlErr := x.GqlErrorf(
-				"Non-nullable field '%s' (type %s) was not present in result from Dgraph.  "+
-					"GraphQL error propagation triggered.", field.Name(), field.Type()).
-				WithLocations(field.Location())
-			gqlErr.Path = copyPath(path)
-
-			return nil, x.GqlErrorList{gqlErr}
+			return scalarResp(field)
 		}
 
+		ftype := field.Type().Name()
+		switch val.(type) {
+		case float64:
+			if ftype != "Float" && ftype != "Int" {
+				return scalarResp(field)
+			}
+		case string:
+			if ftype != "String" && ftype != "ID" && ftype != "DateTime" {
+				return scalarResp(field)
+			}
+		case bool:
+			if ftype != "Boolean" {
+				return scalarResp(field)
+			}
+		default:
+			fmt.Printf("default case: %T, %+v, %s\n", val, val, field.Type())
+		}
 		// val is a scalar
 
 		// Can this ever error?  We can't have an unsupported type or value because
